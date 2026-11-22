@@ -2,6 +2,7 @@
 import os
 import mysql.connector
 import pandas as pd
+import numpy as np
 import streamlit as st
 from dotenv import load_dotenv
 
@@ -20,10 +21,6 @@ def get_connection():
         raise RuntimeError(
             f"Streamlit cannot read the [mysql] Secrets section: {e}"
         )
-
-    st.write("Cloud database settings detected.")
-    st.write("Host:", config.get("host", "MISSING"))
-    st.write("Port:", config.get("port", "MISSING"))
 
     ca_path = os.path.join(
         os.path.dirname(os.path.abspath(__file__)),
@@ -45,16 +42,6 @@ def get_connection():
         connection_timeout=20
     )
 
-    # Local MySQL connection using .env
-    return mysql.connector.connect(
-        host=os.getenv("MYSQL_HOST", "localhost"),
-        user=os.getenv("MYSQL_USER"),
-        password=os.getenv("MYSQL_PASSWORD"),
-        database=os.getenv("MYSQL_DATABASE", "microbial_growth_db"),
-        port=int(os.getenv("MYSQL_PORT", 3306)),
-        connection_timeout=20
-    )
-
 
 # =====================================================
 # 2. CREATE DATABASE TABLES
@@ -65,50 +52,53 @@ def create_tables():
     conn = get_connection()
     cursor = conn.cursor()
 
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS experiments (
-            experiment_id INT AUTO_INCREMENT PRIMARY KEY,
-            organism_name VARCHAR(150) NOT NULL,
-            strain_name VARCHAR(150),
-            temperature FLOAT,
-            ph FLOAT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
+    try:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS experiments (
+                experiment_id INT AUTO_INCREMENT PRIMARY KEY,
+                organism_name VARCHAR(150) NOT NULL,
+                strain_name VARCHAR(150),
+                temperature FLOAT,
+                ph FLOAT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
 
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS growth_data (
-            data_id INT AUTO_INCREMENT PRIMARY KEY,
-            experiment_id INT NOT NULL,
-            time_value FLOAT NOT NULL,
-            od_value FLOAT NOT NULL,
-            FOREIGN KEY (experiment_id)
-                REFERENCES experiments(experiment_id)
-                ON DELETE CASCADE
-        )
-    """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS growth_data (
+                data_id INT AUTO_INCREMENT PRIMARY KEY,
+                experiment_id INT NOT NULL,
+                time_value FLOAT NOT NULL,
+                od_value FLOAT NOT NULL,
+                FOREIGN KEY (experiment_id)
+                    REFERENCES experiments(experiment_id)
+                    ON DELETE CASCADE
+            )
+        """)
 
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS model_results (
-            result_id INT AUTO_INCREMENT PRIMARY KEY,
-            experiment_id INT NOT NULL,
-            model_name VARCHAR(50) NOT NULL,
-            maximum_fitted_od FLOAT,
-            maximum_growth_rate FLOAT,
-            lag_time FLOAT,
-            r_squared FLOAT,
-            rmse FLOAT,
-            aic FLOAT,
-            aicc FLOAT,
-            FOREIGN KEY (experiment_id)
-                REFERENCES experiments(experiment_id)
-                ON DELETE CASCADE
-        )
-    """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS model_results (
+                result_id INT AUTO_INCREMENT PRIMARY KEY,
+                experiment_id INT NOT NULL,
+                model_name VARCHAR(50) NOT NULL,
+                maximum_fitted_od FLOAT,
+                maximum_growth_rate FLOAT,
+                lag_time FLOAT,
+                r_squared FLOAT,
+                rmse FLOAT,
+                aic FLOAT,
+                aicc FLOAT,
+                FOREIGN KEY (experiment_id)
+                    REFERENCES experiments(experiment_id)
+                    ON DELETE CASCADE
+            )
+        """)
 
-    conn.commit()
-    cursor.close()
-    conn.close()
+        conn.commit()
+
+    finally:
+        cursor.close()
+        conn.close()
 
 
 # =====================================================
@@ -120,23 +110,26 @@ def save_experiment(organism, strain, temperature, ph):
     conn = get_connection()
     cursor = conn.cursor()
 
-    query = """
-        INSERT INTO experiments
-        (organism_name, strain_name, temperature, ph)
-        VALUES (%s, %s, %s, %s)
-    """
+    try:
+        query = """
+            INSERT INTO experiments
+            (organism_name, strain_name, temperature, ph)
+            VALUES (%s, %s, %s, %s)
+        """
 
-    values = (organism, strain, temperature, ph)
+        cursor.execute(
+            query,
+            (organism, strain, temperature, ph)
+        )
 
-    cursor.execute(query, values)
+        experiment_id = cursor.lastrowid
+        conn.commit()
 
-    experiment_id = cursor.lastrowid
+        return experiment_id
 
-    conn.commit()
-    cursor.close()
-    conn.close()
-
-    return experiment_id
+    finally:
+        cursor.close()
+        conn.close()
 
 
 # =====================================================
@@ -148,33 +141,40 @@ def save_growth_data(experiment_id, data):
     conn = get_connection()
     cursor = conn.cursor()
 
-    query = """
-        INSERT INTO growth_data
-        (experiment_id, time_value, od_value)
-        VALUES (%s, %s, %s)
-    """
+    try:
+        query = """
+            INSERT INTO growth_data
+            (experiment_id, time_value, od_value)
+            VALUES (%s, %s, %s)
+        """
 
-    if isinstance(data, pd.DataFrame):
-        rows = [
-            (experiment_id, float(row["Time"]), float(row["OD"]))
-            for _, row in data.iterrows()
-        ]
-    else:
-        rows = [
-            (
-                experiment_id,
-                float(row["Time"]),
-                float(row["OD"])
-            )
-            for row in data
-        ]
+        if isinstance(data, pd.DataFrame):
+            rows = [
+                (
+                    experiment_id,
+                    float(row["Time"]),
+                    float(row["OD"])
+                )
+                for _, row in data.iterrows()
+            ]
+        else:
+            rows = [
+                (
+                    experiment_id,
+                    float(row["Time"]),
+                    float(row["OD"])
+                )
+                for row in data
+            ]
 
-    if rows:
-        cursor.executemany(query, rows)
+        if rows:
+            cursor.executemany(query, rows)
 
-    conn.commit()
-    cursor.close()
-    conn.close()
+        conn.commit()
+
+    finally:
+        cursor.close()
+        conn.close()
 
 
 # =====================================================
@@ -185,45 +185,45 @@ def get_experiments():
 
     conn = get_connection()
 
-    query = """
-        SELECT *
-        FROM experiments
-        ORDER BY created_at DESC
-    """
+    try:
+        query = """
+            SELECT *
+            FROM experiments
+            ORDER BY created_at DESC
+        """
 
-    df = pd.read_sql(query, conn)
+        return pd.read_sql(query, conn)
 
-    conn.close()
-
-    return df
+    finally:
+        conn.close()
 
 
 # =====================================================
-# 6. GET GROWTH DATA FOR AN EXPERIMENT
+# 6. GET GROWTH DATA
 # =====================================================
 
 def get_growth_data(experiment_id):
 
     conn = get_connection()
 
-    query = """
-        SELECT
-            time_value AS Time,
-            od_value AS OD
-        FROM growth_data
-        WHERE experiment_id = %s
-        ORDER BY time_value
-    """
+    try:
+        query = """
+            SELECT
+                time_value AS Time,
+                od_value AS OD
+            FROM growth_data
+            WHERE experiment_id = %s
+            ORDER BY time_value
+        """
 
-    df = pd.read_sql(
-        query,
-        conn,
-        params=(experiment_id,)
-    )
+        return pd.read_sql(
+            query,
+            conn,
+            params=(experiment_id,)
+        )
 
-    conn.close()
-
-    return df
+    finally:
+        conn.close()
 
 
 # =====================================================
@@ -234,17 +234,17 @@ def get_model_results():
 
     conn = get_connection()
 
-    query = """
-        SELECT *
-        FROM model_results
-        ORDER BY result_id DESC
-    """
+    try:
+        query = """
+            SELECT *
+            FROM model_results
+            ORDER BY result_id DESC
+        """
 
-    df = pd.read_sql(query, conn)
+        return pd.read_sql(query, conn)
 
-    conn.close()
-
-    return df
+    finally:
+        conn.close()
 
 
 # =====================================================
@@ -271,63 +271,70 @@ def save_model_results(experiment_id, results):
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
     """
 
-    def get_value(metrics, possible_names):
+    def clean_value(value):
 
-        normalized = {
-            str(key).lower().replace(" ", "").replace("_", "").replace("²", "2"):
-            value
-            for key, value in metrics.items()
-        }
+        if value is None:
+            return None
 
-        for name in possible_names:
-            key = name.lower().replace(" ", "").replace("_", "").replace("²", "2")
-            if key in normalized:
-                return normalized[key]
+        try:
+            value = float(value)
 
-        return None
+            if np.isfinite(value):
+                return value
+
+            return None
+
+        except (TypeError, ValueError):
+            return None
 
     rows = []
 
-    if isinstance(results, pd.DataFrame):
-        result_items = [
-            (str(row.get("model_name", row.get("Model", "Unknown"))), row.to_dict())
-            for _, row in results.iterrows()
-        ]
+    try:
 
-    elif isinstance(results, dict):
-        if any(key in results for key in ["model_name", "Model", "model"]):
-            result_items = [
-                (
-                    str(results.get("model_name", results.get("Model", results.get("model", "Unknown")))),
-                    results
-                )
-            ]
-        else:
-            result_items = list(results.items())
+        if isinstance(results, dict):
 
-    else:
-        result_items = []
+            for model_name, result in results.items():
 
-    for model_name, metrics in result_items:
+                if not isinstance(result, dict):
+                    continue
 
-        if not isinstance(metrics, dict):
-            continue
+                if not result.get("success", False):
+                    continue
 
-        rows.append((
-            experiment_id,
-            str(model_name),
-            get_value(metrics, ["maximum_fitted_od", "Maximum Fitted OD", "max_od"]),
-            get_value(metrics, ["maximum_growth_rate", "Maximum Growth Rate", "mu_max"]),
-            get_value(metrics, ["lag_time", "Lag Time", "lambda"]),
-            get_value(metrics, ["r_squared", "R2", "R²"]),
-            get_value(metrics, ["rmse", "RMSE"]),
-            get_value(metrics, ["aic", "AIC"]),
-            get_value(metrics, ["aicc", "AICc"])
-        ))
+                parameters = result.get("parameters", {})
+                metrics = result.get("metrics", {})
 
-    if rows:
-        cursor.executemany(query, rows)
+                rows.append((
+                    experiment_id,
+                    str(model_name),
 
-    conn.commit()
-    cursor.close()
-    conn.close()
+                    clean_value(
+                        parameters.get("Maximum fitted OD")
+                    ),
+
+                    clean_value(
+                        parameters.get("Maximum growth rate")
+                    ),
+
+                    clean_value(
+                        parameters.get("Lag time")
+                    ),
+
+                    clean_value(metrics.get("R2")),
+                    clean_value(metrics.get("RMSE")),
+                    clean_value(metrics.get("AIC")),
+                    clean_value(metrics.get("AICc"))
+                ))
+
+        if rows:
+            cursor.executemany(query, rows)
+            conn.commit()
+
+        if not rows:
+            raise ValueError(
+                "No successful model results were available to save."
+            )
+
+    finally:
+        cursor.close()
+        conn.close()

@@ -14,33 +14,36 @@ load_dotenv()
 
 def get_connection():
 
-    # Cloud database connection using Streamlit Secrets
-    if "mysql" in st.secrets:
-
+    try:
         config = st.secrets["mysql"]
-
-        ca_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
-            "isrgrootx1.pem"
+    except Exception as e:
+        raise RuntimeError(
+            f"Streamlit cannot read the [mysql] Secrets section: {e}"
         )
 
-        if not os.path.exists(ca_path):
-            raise FileNotFoundError(
-                "CA certificate is missing. "
-                "Please add isrgrootx1.pem to the project."
-            )
+    st.write("Cloud database settings detected.")
+    st.write("Host:", config.get("host", "MISSING"))
+    st.write("Port:", config.get("port", "MISSING"))
 
-        return mysql.connector.connect(
-            host=config["host"],
-            port=int(config.get("port", 4000)),
-            user=config["user"],
-            password=config["password"],
-            database=config["database"],
-            ssl_ca=ca_path,
-            ssl_verify_cert=True,
-            ssl_verify_identity=True,
-            connection_timeout=20
-        )
+    ca_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "isrgrootx1.pem"
+    )
+
+    if not os.path.exists(ca_path):
+        raise FileNotFoundError("isrgrootx1.pem is missing.")
+
+    return mysql.connector.connect(
+        host=config["host"],
+        port=int(config.get("port", 4000)),
+        user=config["user"],
+        password=config["password"],
+        database=config["database"],
+        ssl_ca=ca_path,
+        ssl_verify_cert=True,
+        ssl_verify_identity=True,
+        connection_timeout=20
+    )
 
     # Local MySQL connection using .env
     return mysql.connector.connect(

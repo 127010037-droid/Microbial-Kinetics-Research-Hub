@@ -1,28 +1,66 @@
+
 import os
 import mysql.connector
 import pandas as pd
+import streamlit as st
 from dotenv import load_dotenv
 
 load_dotenv()
 
 
-# DATABASE CONNECTION
+# =====================================================
+# 1. DATABASE CONNECTION
+# =====================================================
 
 def get_connection():
+
+    # Cloud database connection using Streamlit Secrets
+    if "mysql" in st.secrets:
+
+        config = st.secrets["mysql"]
+
+        ca_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "isrgrootx1.pem"
+        )
+
+        if not os.path.exists(ca_path):
+            raise FileNotFoundError(
+                "CA certificate is missing. "
+                "Please add isrgrootx1.pem to the project."
+            )
+
+        return mysql.connector.connect(
+            host=config["host"],
+            port=int(config.get("port", 4000)),
+            user=config["user"],
+            password=config["password"],
+            database=config["database"],
+            ssl_ca=ca_path,
+            ssl_verify_cert=True,
+            ssl_verify_identity=True,
+            connection_timeout=20
+        )
+
+    # Local MySQL connection using .env
     return mysql.connector.connect(
-        host=os.getenv("MYSQL_HOST"),
+        host=os.getenv("MYSQL_HOST", "localhost"),
         user=os.getenv("MYSQL_USER"),
         password=os.getenv("MYSQL_PASSWORD"),
-        database=os.getenv("MYSQL_DATABASE")
+        database=os.getenv("MYSQL_DATABASE", "microbial_growth_db"),
+        port=int(os.getenv("MYSQL_PORT", 3306)),
+        connection_timeout=20
     )
 
 
-# CREATE TABLES
+# =====================================================
+# 2. CREATE DATABASE TABLES
+# =====================================================
 
 def create_tables():
 
-    connection = get_connection()
-    cursor = connection.cursor()
+    conn = get_connection()
+    cursor = conn.cursor()
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS experiments (
@@ -65,192 +103,228 @@ def create_tables():
         )
     """)
 
-    connection.commit()
+    conn.commit()
     cursor.close()
-    connection.close()
+    conn.close()
 
 
-# SAVE EXPERIMENT
+# =====================================================
+# 3. SAVE EXPERIMENT DETAILS
+# =====================================================
 
 def save_experiment(organism, strain, temperature, ph):
 
-    connection = get_connection()
-    cursor = connection.cursor()
+    conn = get_connection()
+    cursor = conn.cursor()
 
-    try:
-        cursor.execute("""
-            INSERT INTO experiments
-            (organism_name, strain_name, temperature, ph)
-            VALUES (%s, %s, %s, %s)
-        """, (organism, strain, temperature, ph))
+    query = """
+        INSERT INTO experiments
+        (organism_name, strain_name, temperature, ph)
+        VALUES (%s, %s, %s, %s)
+    """
 
-        experiment_id = cursor.lastrowid
-        connection.commit()
+    values = (organism, strain, temperature, ph)
 
-        return experiment_id
+    cursor.execute(query, values)
 
-    finally:
-        cursor.close()
-        connection.close()
+    experiment_id = cursor.lastrowid
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    return experiment_id
 
 
-# SAVE GROWTH DATA
+# =====================================================
+# 4. SAVE GROWTH DATA
+# =====================================================
 
 def save_growth_data(experiment_id, data):
 
-    connection = get_connection()
-    cursor = connection.cursor()
+    conn = get_connection()
+    cursor = conn.cursor()
 
-    try:
-        records = [
+    query = """
+        INSERT INTO growth_data
+        (experiment_id, time_value, od_value)
+        VALUES (%s, %s, %s)
+    """
+
+    if isinstance(data, pd.DataFrame):
+        rows = [
+            (experiment_id, float(row["Time"]), float(row["OD"]))
+            for _, row in data.iterrows()
+        ]
+    else:
+        rows = [
             (
                 experiment_id,
                 float(row["Time"]),
                 float(row["OD"])
             )
-            for _, row in data.iterrows()
+            for row in data
         ]
 
-        cursor.executemany("""
-            INSERT INTO growth_data
-            (experiment_id, time_value, od_value)
-            VALUES (%s, %s, %s)
-        """, records)
+    if rows:
+        cursor.executemany(query, rows)
 
-        connection.commit()
-
-    finally:
-        cursor.close()
-        connection.close()
+    conn.commit()
+    cursor.close()
+    conn.close()
 
 
-# GET ALL EXPERIMENTS
+# =====================================================
+# 5. GET ALL EXPERIMENTS
+# =====================================================
 
 def get_experiments():
 
-    connection = get_connection()
+    conn = get_connection()
 
-    try:
-        query = """
-            SELECT
-                experiment_id,
-                organism_name,
-                strain_name,
-                temperature,
-                ph,
-                created_at
-            FROM experiments
-            ORDER BY created_at DESC
-        """
+    query = """
+        SELECT *
+        FROM experiments
+        ORDER BY created_at DESC
+    """
 
-        return pd.read_sql(query, connection)
+    df = pd.read_sql(query, conn)
 
-    finally:
-        connection.close()
+    conn.close()
+
+    return df
 
 
-# GET GROWTH DATA
+# =====================================================
+# 6. GET GROWTH DATA FOR AN EXPERIMENT
+# =====================================================
 
 def get_growth_data(experiment_id):
 
-    connection = get_connection()
+    conn = get_connection()
 
-    try:
-        query = """
-            SELECT
-                time_value AS Time,
-                od_value AS OD
-            FROM growth_data
-            WHERE experiment_id = %s
-            ORDER BY time_value
-        """
+    query = """
+        SELECT
+            time_value AS Time,
+            od_value AS OD
+        FROM growth_data
+        WHERE experiment_id = %s
+        ORDER BY time_value
+    """
 
-        return pd.read_sql(
-            query,
-            connection,
-            params=(experiment_id,)
-        )
+    df = pd.read_sql(
+        query,
+        conn,
+        params=(experiment_id,)
+    )
 
-    finally:
-        connection.close()
+    conn.close()
+
+    return df
 
 
-# GET SAVED MODEL RESULTS
+# =====================================================
+# 7. GET ALL MODEL RESULTS
+# =====================================================
 
 def get_model_results():
 
-    connection = get_connection()
+    conn = get_connection()
 
-    try:
-        query = """
-            SELECT
-                result_id,
-                experiment_id,
-                model_name,
-                maximum_fitted_od,
-                maximum_growth_rate,
-                lag_time,
-                r_squared,
-                rmse,
-                aic,
-                aicc
-            FROM model_results
-            ORDER BY experiment_id, model_name
-        """
+    query = """
+        SELECT *
+        FROM model_results
+        ORDER BY result_id DESC
+    """
 
-        return pd.read_sql(query, connection)
+    df = pd.read_sql(query, conn)
 
-    finally:
-        connection.close()
+    conn.close()
+
+    return df
 
 
-# SAVE MODEL RESULTS
+# =====================================================
+# 8. SAVE MODEL RESULTS
+# =====================================================
 
 def save_model_results(experiment_id, results):
 
-    connection = get_connection()
-    cursor = connection.cursor()
+    conn = get_connection()
+    cursor = conn.cursor()
 
-    try:
-        for model_name, result in results.items():
+    query = """
+        INSERT INTO model_results (
+            experiment_id,
+            model_name,
+            maximum_fitted_od,
+            maximum_growth_rate,
+            lag_time,
+            r_squared,
+            rmse,
+            aic,
+            aicc
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+    """
 
-            if not result.get("success", False):
-                continue
+    def get_value(metrics, possible_names):
 
-            parameters = result["parameters"]
-            metrics = result["metrics"]
+        normalized = {
+            str(key).lower().replace(" ", "").replace("_", "").replace("²", "2"):
+            value
+            for key, value in metrics.items()
+        }
 
-            cursor.execute("""
-                INSERT INTO model_results (
-                    experiment_id,
-                    model_name,
-                    maximum_fitted_od,
-                    maximum_growth_rate,
-                    lag_time,
-                    r_squared,
-                    rmse,
-                    aic,
-                    aicc
+        for name in possible_names:
+            key = name.lower().replace(" ", "").replace("_", "").replace("²", "2")
+            if key in normalized:
+                return normalized[key]
+
+        return None
+
+    rows = []
+
+    if isinstance(results, pd.DataFrame):
+        result_items = [
+            (str(row.get("model_name", row.get("Model", "Unknown"))), row.to_dict())
+            for _, row in results.iterrows()
+        ]
+
+    elif isinstance(results, dict):
+        if any(key in results for key in ["model_name", "Model", "model"]):
+            result_items = [
+                (
+                    str(results.get("model_name", results.get("Model", results.get("model", "Unknown")))),
+                    results
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """, (
-                experiment_id,
-                model_name,
-                parameters["Maximum fitted OD"],
-                parameters["Maximum growth rate"],
-                parameters["Lag time"],
-                metrics["R2"],
-                metrics["RMSE"],
-                metrics["AIC"],
-                metrics["AICc"]
-            ))
+            ]
+        else:
+            result_items = list(results.items())
 
-        connection.commit()
+    else:
+        result_items = []
 
-    except Exception:
-        connection.rollback()
-        raise
+    for model_name, metrics in result_items:
 
-    finally:
-        cursor.close()
-        connection.close()
+        if not isinstance(metrics, dict):
+            continue
+
+        rows.append((
+            experiment_id,
+            str(model_name),
+            get_value(metrics, ["maximum_fitted_od", "Maximum Fitted OD", "max_od"]),
+            get_value(metrics, ["maximum_growth_rate", "Maximum Growth Rate", "mu_max"]),
+            get_value(metrics, ["lag_time", "Lag Time", "lambda"]),
+            get_value(metrics, ["r_squared", "R2", "R²"]),
+            get_value(metrics, ["rmse", "RMSE"]),
+            get_value(metrics, ["aic", "AIC"]),
+            get_value(metrics, ["aicc", "AICc"])
+        ))
+
+    if rows:
+        cursor.executemany(query, rows)
+
+    conn.commit()
+    cursor.close()
+    conn.close()

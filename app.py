@@ -654,6 +654,9 @@ elif page == "Experiment Comparison":
         model_results = get_model_results()
         st.write("Model result columns:", model_results.columns.tolist())
         st.dataframe(model_results)
+        st.write("Number of model results:", len(model_results))
+        st.write("Model result values:")
+        st.dataframe(model_results.head(10))
 
         if experiments.empty:
             st.info("No saved experiments are available.")
